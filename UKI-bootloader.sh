@@ -54,11 +54,11 @@ cp "$preset_file" "${preset_file}.bak" 2>/dev/null || true
 uki_path="$ESP/EFI/Linux/linux-cachyos.efi"
 
 cat > "$preset_file" << PRESET
-# Modo UKI estricto
+# Modo UKI estricto (Corregido para CachyOS)
 ALL_kver="/boot/vmlinuz-linux-cachyos"
 PRESETS=('default')
 default_uki="${uki_path}"
-default_options=""
+default_options="--splash /usr/share/systemd/bootctl/splash-arch.bmp --cmdline ${cmdline_file}"
 PRESET
 
 mkdir -p "$ESP/EFI/Linux"
