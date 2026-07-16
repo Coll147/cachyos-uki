@@ -1,3 +1,8 @@
+### :warning: AI-Slop Alert
+This thing was made almost entirely with AI without using my brain
+----
+
+
 UKI-bootloader.sh
 
 replaces systemdboot in favor of UKI
