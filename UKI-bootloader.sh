@@ -108,7 +108,7 @@ cat > "$preset_file" << PRESET
 ALL_kver="/boot/vmlinuz-${kernel_name}"
 PRESETS=('default')
 default_uki="${uki_path}"
-default_options="--splash /usr/share/systemd/bootctl/splash-arch.bmp --cmdline \"${cmdline_file}\""
+default_options="--splash /usr/share/systemd/bootctl/splash-arch.bmp --cmdline ${cmdline_file}"
 PRESET
 
 mkdir -p "$ESP/EFI/Linux"
