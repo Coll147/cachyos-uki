@@ -7,9 +7,12 @@ set -euo pipefail
 
 OK()  { echo -e "\033[0;32m  ✔  \033[0m$*"; }
 WRN() { echo -e "\033[1;33m  ⚠  \033[0m$*"; }
-HDR() { echo -e "\n\033[1;033[0;36m══════  $* ══════\033[0m"; }
+DIE() { echo -e "\033[0;31m  ✘  \033[0m$*"; exit 1; }
+HDR() { echo -e "\n\033[1;36m══════  $* ══════\033[0m"; }
 
-[[ $EUID -eq 0 ]] || { echo "Ejecuta como root"; exit 1; }
+[[ $EUID -eq 0 ]] || DIE "Ejecuta como root"
+
+needs_rebuild=0
 
 # 1. PURGA DE KERNELS INNECESARIOS (Aceleración de compilaciones futuras)
 HDR "Evaluando Kernel LTS"
@@ -19,8 +22,12 @@ for pkg in linux-cachyos-lts linux-cachyos-lts-headers; do
 done
 
 if [ ${#lts_pkgs[@]} -gt 0 ]; then
-    pacman -Rs --noconfirm "${lts_pkgs[@]}" && OK "Kernel LTS removido"
-    rm -f /boot/initramfs-linux-cachyos-lts.img /boot/initramfs-linux-cachyos-lts-fallback.img
+    if pacman -Rs --noconfirm "${lts_pkgs[@]}"; then
+        OK "Kernel LTS removido"
+        rm -f /boot/initramfs-linux-cachyos-lts.img /boot/initramfs-linux-cachyos-lts-fallback.img
+    else
+        DIE "No se pudo desinstalar el kernel LTS; no se tocan sus initramfs"
+    fi
 else
     OK "No se detectó kernel LTS secundario"
 fi
@@ -32,10 +39,15 @@ cmdline_file="/etc/kernel/cmdline.d/root.conf"
 
 if [[ -f "$cmdline_file" ]]; then
     cmdline=$(cat "$cmdline_file")
-    
-    # Quitar animaciones (Plymouth) para acelerar el salto a modo gráfico real
-    cmdline="${cmdline/ splash/}"
-    cmdline="${cmdline/splash /}"
+
+    # Quitar 'splash' como token completo (respetando límites de palabra),
+    # sin tocar parámetros que solo contengan "splash" como subcadena
+    # (p. ej. splashscreen=1)
+    read -ra tokens <<< "$cmdline"
+    filtered=()
+    for tok in "${tokens[@]}"; do
+        [[ "$tok" == "splash" ]] || filtered+=("$tok")
+    done
 
     # Inyección de flags optimizados
     # - rootflags=noatime: Apaga la actualización de metadatos de acceso en discos duros/SSDs
@@ -47,12 +59,21 @@ if [[ -f "$cmdline_file" ]]; then
         ["udev.log_level"]="udev.log_level=3"
     )
     for key in "${!opts[@]}"; do
-        if ! echo "$cmdline" | grep -q "$key"; then
-            cmdline="$cmdline ${opts[$key]}"
-        fi
+        already_present=0
+        for tok in "${filtered[@]}"; do
+            [[ "$tok" == "$key"* ]] && already_present=1 && break
+        done
+        [[ $already_present -eq 0 ]] && filtered+=("${opts[$key]}")
     done
-    echo "$cmdline" | tr -s ' ' | sed 's/^ //;s/ $//' > "$cmdline_file"
-    OK "Parámetros aplicados en cmdline: $(cat "$cmdline_file")"
+
+    new_cmdline="${filtered[*]}"
+    if [[ "$new_cmdline" != "$cmdline" ]]; then
+        echo "$new_cmdline" > "$cmdline_file"
+        needs_rebuild=1
+        OK "Parámetros aplicados en cmdline: $new_cmdline"
+    else
+        OK "cmdline ya estaba optimizada, sin cambios"
+    fi
 else
     WRN "No se encontró un archivo de cmdline centralizado para optimizar."
 fi
@@ -67,10 +88,29 @@ if [[ -f "$mkinitcpio_conf" ]]; then
     # kms: Kernel Mode Setting temprano; al quitarlo se delega de forma directa y fluida al driver de video principal mas tarde
     for hook in plymouth kms; do
         if grep -qP "^HOOKS=.*\b${hook}\b" "$mkinitcpio_conf"; then
-            sed -i "/^HOOKS=/s/[[:space:]]\+${hook}//g" "$mkinitcpio_conf"
-            OK "Hook '${hook}' eliminado para aligerar la carga en memoria inicial"
+            # Cubre el hook precedido de espacio o de '(' (primer elemento del array)
+            sed -i -E "/^HOOKS=/s/([([:space:]])${hook}([[:space:]])/\1\2/g; /^HOOKS=/s/([([:space:]])${hook}\)/\1)/g" "$mkinitcpio_conf"
+            if grep -qP "^HOOKS=.*\b${hook}\b" "$mkinitcpio_conf"; then
+                WRN "No se pudo eliminar el hook '${hook}' automáticamente, revísalo a mano"
+            else
+                OK "Hook '${hook}' eliminado para aligerar la carga en memoria inicial"
+                needs_rebuild=1
+            fi
         fi
     done
+fi
+
+# 3b. REGENERAR INITRAMFS/UKI SI HUBO CAMBIOS
+# Sin este paso, los cambios de cmdline y HOOKS no se aplican al binario que
+# realmente arranca (el UKI ya generado por el Módulo 1 quedó obsoleto).
+if [[ $needs_rebuild -eq 1 ]]; then
+    HDR "Regenerando initramfs/UKI con los cambios aplicados"
+    if command -v mkinitcpio &>/dev/null && [[ -f /etc/mkinitcpio.d/linux-cachyos.preset ]]; then
+        mkinitcpio -p linux-cachyos
+        OK "initramfs/UKI regenerado"
+    else
+        WRN "No se encontró el preset de linux-cachyos; regenera el initramfs manualmente"
+    fi
 fi
 
 # 4. ENMASCARADO DE SERVICIOS CRÍTICOS DE SYSTEMD
